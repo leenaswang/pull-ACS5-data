@@ -6,6 +6,7 @@ import numpy as np
 import lib.configurePaths as configurePaths
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.cluster import KMeans
 
 #cProjectRoot = configurePaths.getProjectRoot()
 _, _, cCleanDataPath, _, _, cTablesOutputPath, cFiguresOutputPath = configurePaths.getSubfolderPaths(configurePaths.getProjectRoot())
@@ -153,17 +154,13 @@ def plottingVarBlockGroupsByYear(dataframe, xVar, yVar, title, xlabel, ylabel, f
 def plotMap(numeratorVar, denominatorVar, dataframe, year, figuresOutputFolder):
     # Filter GeoDataFrame for the selected year
     dataframe_year = dataframe[dataframe['YEAR'] == year].copy()
-
     # Calculate the ratio column
     ratioCol = f"{numeratorVar}_to_{denominatorVar}_Ratio"
     dataframe_year[ratioCol] = dataframe_year[numeratorVar] / dataframe_year[denominatorVar]
-
     # Group by GEOID11 to get the mean ratio per tract
     dataframe_GEOID11avg = dataframe_year.groupby('GEOID11')[[ratioCol]].mean().reset_index()
-
     # Merge the average ratios back with the original GeoDataFrame geometry
     merged_gdf = dataframe[['GEOID11', 'geometry']].drop_duplicates().merge(dataframe_GEOID11avg, on='GEOID11')
-
     # Plot the map
     ax = merged_gdf.plot(column=ratioCol,
                          figsize=(10, 10),
@@ -174,15 +171,67 @@ def plotMap(numeratorVar, denominatorVar, dataframe, year, figuresOutputFolder):
                          linewidth=0.5,
                          vmin = 0,
                          vmax = 0.3)  # Lock the scale from 0 to 1
-
     ax.set_axis_off()
-
     # Save the figure
     outputFilePath = configurePaths.getFilePath(figuresOutputFolder,
                                                 f"ratio_{numeratorVar}to{denominatorVar}_{year}.png")
     plt.savefig(outputFilePath)
     plt.close()
     print(f"Figure saved to {outputFilePath}")
+
+def calculatedStDevVars(dataFrame, variable):
+    std_dev_df = (
+        dataFrame
+        .groupby('GEOID11')[variable]
+        .std()
+        .reset_index(name=f'{variable}_std_dev')
+    )
+    return std_dev_df
+
+def elbowTest(dataFrame, variable, outputFolder):
+    X = dataFrame[[variable]].dropna().values # or whatever variable you're clustering
+    wcss = []
+    # Try k from 1 to 10
+    for k in range(1, 11):
+        kmeans = KMeans(n_clusters=k, random_state=42)
+        kmeans.fit(X)
+        wcss.append(kmeans.inertia_)
+    # Plot the elbow curve
+    plt.plot(range(1, 11), wcss, marker='o')
+    plt.xlabel('Number of Clusters (k)')
+    plt.ylabel('WCSS (Inertia)')
+    plt.title('Elbow Method for Optimal k')
+    outputFilePath = configurePaths.getFilePath(outputFolder,
+                                                f"kMeansElbow{variable}.png")
+    plt.savefig(outputFilePath)
+    print(f"Figure saved to {outputFilePath}")
+
+def kMeansClustering(dataFrame, variable):
+    #drop NA values
+    X = dataFrame[[variable]].dropna().values  # only use non-NaN rows
+    #fit k-mans with k=3
+    kmeans = KMeans(n_clusters=3, random_state=42)
+    clusters = kmeans.fit_predict(X)
+    #add k-means cluster labels back to dataframe
+    dataFrame = dataFrame.dropna(subset=[variable]).copy()
+    dataFrame['cluster'] = clusters
+    return dataFrame
+
+def summaryStatistics(dataframe, variable, outputFolder):
+    summaryDF = dataframe.groupby(variable).agg({
+        'fPercentCommute': ['median', 'std'],
+        'nMedHHIncome': ['median', 'std'],
+        'fRentToIncomeRatio': ['median', 'std']
+    }).round(1).reset_index()
+    latexTable = summaryDF.to_latex(
+        index=False,
+        caption='Cluster Summary Statistics',
+        label='tab:cluster_summary'
+    )
+    outputFolder = configurePaths.getFilePath(outputFolder, f"cluster_summary_{variable}.tex")
+    with open(outputFolder, 'w') as f:
+        f.write(latexTable)
+    print(f"LaTeX table saved to {outputFolder}")
 
 def main():
     mergedGDF = mergeFilesViaGEOID(cCleanDataPath, "ACS5_panel.feather",
@@ -205,19 +254,25 @@ def main():
     # print(weird.sort_values(by='nRentToIncomeRatio', ascending=False))
     # output_csv_path = configurePaths.getFilePath(cTablesOutputPath, "weird_rent_income_ratios.csv")
     # weird.to_csv(output_csv_path, index=False)
-    plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fRentToIncomeRatio',
-                                 'Monthly Rent/Income Ratio and Median Household Income in Philadelphia County',
-                                 "Monthly Rent/Income Ratio", "Median Annual Household Income",
-                                 cFiguresOutputPath, None, None,"messy")
-    plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fRentToIncomeRatio',
-                                 'Monthly Rent/Income Ratio and Median Household Income in Philadelphia County',
-                                 "Median Annual Household Income", "Monthly Rent/Income Ratio",
-                                 cFiguresOutputPath, 180000, 1,"clean")
-    plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fPercentCommute',
-                                 "Percent of Workers Who Commute and Median Household Income",
-                                 "Median Annual Household Income", "Percent of Workers Who Commute",
-                                 cFiguresOutputPath, 180000, 1,"clean")
+    # plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fRentToIncomeRatio',
+    #                              'Monthly Rent/Income Ratio and Median Household Income in Philadelphia County',
+    #                              "Monthly Rent/Income Ratio", "Median Annual Household Income",
+    #                              cFiguresOutputPath, None, None,"messy")
+    # plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fRentToIncomeRatio',
+    #                              'Monthly Rent/Income Ratio and Median Household Income in Philadelphia County',
+    #                              "Median Annual Household Income", "Monthly Rent/Income Ratio",
+    #                              cFiguresOutputPath, 180000, 1,"clean")
+    # plottingVarBlockGroupsByYear(mergedGDF, 'nMedHHIncome', 'fPercentCommute',
+    #                              "Percent of Workers Who Commute and Median Household Income",
+    #                              "Median Annual Household Income", "Percent of Workers Who Commute",
+    #                              cFiguresOutputPath, 180000, 1,"clean")
+    rentIncomeRatioDF = calculatedStDevVars(mergedGDF, 'fRentToIncomeRatio')
+    elbowTest(rentIncomeRatioDF, 'fRentToIncomeRatio_std_dev', cFiguresOutputPath)
+    kMeansStDevDF = kMeansClustering(rentIncomeRatioDF, 'fRentToIncomeRatio_std_dev')
+    mergedGDFwithClusters = mergedGDF.merge(kMeansStDevDF[['GEOID11', 'cluster']], on='GEOID11', how='left')
+    summaryStatistics(mergedGDFwithClusters, 'cluster', cTablesOutputPath)
+
+
 
 #Execute
 main()
-
